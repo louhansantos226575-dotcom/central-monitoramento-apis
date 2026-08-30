@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Central Inteligente de Monitoramento</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#1a2233; --card2:#212b40; --text:#eef1f7;
+    --muted:#9aa5b8; --accent:#4f8cff; --up:#39d98a; --down:#ff6b6b; --border:#2a3446;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:linear-gradient(180deg,#0b0f18,#0f1420 30%); color:var(--text); min-height:100vh;
+  }
+  header{padding:32px 24px 8px; max-width:1100px; margin:0 auto;}
+  header h1{font-size:1.6rem; margin:0 0 4px;}
+  header p{color:var(--muted); margin:0; font-size:.95rem;}
+  main{max-width:1100px; margin:0 auto; padding:24px;}
+  .section-title{font-size:1.05rem; margin:32px 0 14px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em;}
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:16px;}
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px;
+    transition:transform .15s ease, border-color .15s ease;
+  }
+  .card:hover{transform:translateY(-2px); border-color:var(--accent);}
+  .card .label{color:var(--muted); font-size:.85rem; display:flex; justify-content:space-between; align-items:center;}
+  .card .value{font-size:1.9rem; font-weight:700; margin:8px 0 4px;}
+  .card .sub{font-size:.85rem; color:var(--muted);}
+  .badge{padding:2px 8px; border-radius:999px; font-size:.75rem; font-weight:600;}
+  .badge.up{background:rgba(57,217,138,.15); color:var(--up);}
+  .badge.down{background:rgba(255,107,107,.15); color:var(--down);}
+  .status{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:.85rem; margin-top:8px;}
+  .dot{width:8px; height:8px; border-radius:50%; background:var(--up);}
+  button{
+    background:var(--accent); color:#fff; border:none; padding:8px 16px; border-radius:8px;
+    font-size:.85rem; cursor:pointer; font-weight:600;
+  }
+  button:hover{opacity:.9}
+  .top-bar{display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;}
+  .empty{color:var(--muted); font-size:.9rem; padding:20px; text-align:center; border:1px dashed var(--border); border-radius:12px;}
+  .error{color:var(--down); font-size:.85rem; margin-top:10px;}
+  footer{text-align:center; color:var(--muted); font-size:.8rem; padding:30px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top-bar">
+    <div>
+      <h1>Central Inteligente de Monitoramento</h1>
+      <p>Cotações de moedas e clima em tempo real — integrando APIs externas via Make.com + Airtable</p>
+    </div>
+    <button onclick="carregarTudo()">Atualizar agora</button>
+  </div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Carregando dados...</span></div>
+</header>
+
+<main>
+  <div class="section-title">Cotações</div>
+  <div class="grid" id="gridCotacoes"><div class="empty">Carregando cotações...</div></div>
+
+  <div class="section-title">Clima</div>
+  <div class="grid" id="gridClima"><div class="empty">Carregando clima...</div></div>
+</main>
+
+<footer>Trabalho de Integração de APIs — dados persistidos no Airtable, atualizados automaticamente via Make.com</footer>
+
+<script>
+// ============================================================
+// CONFIGURAÇÃO — troque pelos seus dados do Airtable
+// ============================================================
+const AIRTABLE_BASE_ID   = "appL0QkEi4pLnPw1a";       // ex: app1234567890abcd
+const AIRTABLE_TOKEN     = "pat1k5vIMPnjmqD10.0653cb4bee3ebf18d88c850e01c26546fb92e4e45156c3851b78d66020e9b903";// Personal Access Token (leitura)
+const TABELA_COTACOES    = "Cotacoes";
+const TABELA_CLIMA       = "Clima";
+// ============================================================
+
+async function buscarTabela(nomeTabela) {
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(nomeTabela)}?sort[0][field]=Data&sort[0][direction]=desc`;
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` }
+  });
+  if (!resp.ok) throw new Error(`Erro ${resp.status} ao buscar ${nomeTabela}`);
+  const data = await resp.json();
+  return data.records;
+}
+
+function formatarData(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+}
+
+function renderizarCotacoes(records) {
+  const grid = document.getElementById("gridCotacoes");
+  if (!records.length) { grid.innerHTML = '<div class="empty">Nenhuma cotação encontrada ainda. Rode o cenário do Make.</div>'; return; }
+
+  // pega só o registro mais recente de cada moeda
+  const maisRecentePorMoeda = {};
+  for (const r of records) {
+    const moeda = r.fields.Moeda;
+    if (!maisRecentePorMoeda[moeda]) maisRecentePorMoeda[moeda] = r;
+  }
+
+  grid.innerHTML = Object.values(maisRecentePorMoeda).map(r => {
+    const f = r.fields;
+    const variacao = f.Variacao ?? 0;
+    const subiu = variacao >= 0;
+    return `
+      <div class="card">
+        <div class="label">
+          <span>${f.Moeda ?? "-"}</span>
+          <span class="badge ${subiu ? 'up' : 'down'}">${subiu ? '▲' : '▼'} ${Math.abs(variacao).toFixed(2)}%</span>
+        </div>
+        <div class="value">R$ ${Number(f.Valor ?? 0).toFixed(4)}</div>
+        <div class="sub">Atualizado em ${formatarData(f.Data)}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderizarClima(records) {
+  const grid = document.getElementById("gridClima");
+  if (!records.length) { grid.innerHTML = '<div class="empty">Nenhum dado de clima encontrado ainda. Rode o cenário do Make.</div>'; return; }
+
+  const maisRecentePorCidade = {};
+  for (const r of records) {
+    const cidade = r.fields.Cidade;
+    if (!maisRecentePorCidade[cidade]) maisRecentePorCidade[cidade] = r;
+  }
+
+  grid.innerHTML = Object.values(maisRecentePorCidade).map(r => {
+    const f = r.fields;
+    return `
+      <div class="card">
+        <div class="label"><span>${f.Cidade ?? "-"}</span></div>
+        <div class="value">${Number(f.Temperatura ?? 0).toFixed(0)}°C</div>
+        <div class="sub">${f.Descricao ?? ""} · ${formatarData(f.Data)}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function carregarTudo() {
+  const statusText = document.getElementById("statusText");
+  const statusDot = document.getElementById("statusDot");
+  statusText.textContent = "Atualizando...";
+  try {
+    const [cotacoes, clima] = await Promise.all([
+      buscarTabela(TABELA_COTACOES),
+      buscarTabela(TABELA_CLIMA)
+    ]);
+    renderizarCotacoes(cotacoes);
+    renderizarClima(clima);
+    statusDot.style.background = "var(--up)";
+    statusText.textContent = "Dados atualizados em " + new Date().toLocaleTimeString("pt-BR");
+  } catch (err) {
+    statusDot.style.background = "var(--down)";
+    statusText.textContent = "Erro ao carregar dados";
+    document.getElementById("gridCotacoes").innerHTML = `<div class="empty error">${err.message}. Verifique o BASE_ID e o TOKEN no topo do arquivo.</div>`;
+  }
+}
+
+carregarTudo();
+</script>
+
+</body>
+</html>
